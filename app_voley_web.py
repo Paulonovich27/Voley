@@ -10,7 +10,7 @@ from datetime import datetime
 st.set_page_config(page_title="Sistema Vóley", page_icon="🏐", layout="wide")
 
 # PEGA AQUÍ TU URL DE NEON (NO LA BORRES)
-DATABASE_URL = "postgresql://usuario:contraseña@ep-tu-base-de-datos.aws.neon.tech/neondb?sslmode=require"
+DATABASE_URL = st.secrets["DATABASE_URL"]
 
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
