@@ -58,6 +58,71 @@ def calcular_deuda_profesor():
             
     return clases_pasadas, total_generado, total_generado - total_pagado
 
+# ==========================================
+# LÓGICA DE RENDERIZADO DEL REPORTE
+# ==========================================
+def renderizar_reporte(per_rep):
+    hoy = datetime.now().date()
+    dias_db = run_query("SELECT fecha FROM periodos WHERE periodo=%s", (per_rep,))
+    dias_periodo = sorted([d[0] for d in dias_db], key=lambda x: datetime.strptime(x, "%d/%m/%Y")) if dias_db else []
+    
+    asis_per = run_query("SELECT nino, dia FROM asistencias WHERE periodo=%s", (per_rep,))
+    asis_set = set((a[0], a[1]) for a in asis_per) if asis_per else set()
+    
+    mensuales_per = run_query("SELECT nino, pago FROM alumnos_mensuales WHERE periodo=%s", (per_rep,))
+    libres_todos = run_query("SELECT nino, pagadas, estado FROM alumnos_libres")
+    nombres_libres_asis = set(a[0] for a in asis_per) if asis_per else set()
+    libres_filtrados = [l for l in libres_todos if l[0] in nombres_libres_asis] if libres_todos else []
+
+    if mensuales_per or libres_filtrados:
+        html = '<div style="overflow-x: auto;"><table style="width:100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">'
+        html += '<tr style="background-color: #1f2937; color: white;">'
+        for col in ["Alumno", "Mod", "Pago/Saldo"] + dias_periodo: html += f'<th style="padding: 10px; border: 1px solid #444;">{col}</th>'
+        html += '</tr>'
+        
+        if mensuales_per:
+            for m in mensuales_per:
+                nino, pago = m[0], m[1]
+                bg_fila = '#1e3a8a' if pago == 'Sí' else '#991b1b'
+                html += f'<tr><td style="background-color: {bg_fila}; color: white; padding: 8px; border: 1px solid #444; font-weight: bold; text-align: left;">{nino}</td>'
+                html += f'<td style="background-color: {bg_fila}; color: white; border: 1px solid #444;">Mensual</td>'
+                html += f'<td style="background-color: {bg_fila}; color: white; border: 1px solid #444;">Pagó: {pago}</td>'
+                
+                for dia in dias_periodo:
+                    try: f_clase = datetime.strptime(dia, "%d/%m/%Y").date()
+                    except: f_clase = hoy
+                    if f_clase > hoy: html += f'<td style="background-color: {bg_fila}; border: 1px solid #444;"></td>'
+                    else:
+                        if (nino, dia) in asis_set: html += f'<td style="background-color: #059669; color: white; border: 1px solid #444; font-weight: bold;">Asistió</td>'
+                        else: html += f'<td style="background-color: {"#ea580c" if pago=="Sí" else bg_fila}; color: white; border: 1px solid #444; font-weight: bold;">Faltó</td>'
+                html += '</tr>'
+                
+        if libres_filtrados:
+            for l in libres_filtrados:
+                nino, pagadas, estado = l[0], l[1], l[2]
+                bg_fila = '#065f46' if 'Al Día' in estado else '#991b1b'
+                html += f'<tr><td style="background-color: {bg_fila}; color: white; padding: 8px; border: 1px solid #444; font-weight: bold; text-align: left;">{nino}</td>'
+                html += f'<td style="background-color: {bg_fila}; color: white; border: 1px solid #444;">Libre</td>'
+                html += f'<td style="background-color: {bg_fila}; color: white; border: 1px solid #444;">Pagadas: {pagadas}</td>'
+                
+                for dia in dias_periodo:
+                    try: f_clase = datetime.strptime(dia, "%d/%m/%Y").date()
+                    except: f_clase = hoy
+                    if f_clase > hoy: html += f'<td style="background-color: {bg_fila}; border: 1px solid #444;"></td>'
+                    else:
+                        if (nino, dia) in asis_set: html += f'<td style="background-color: #059669; color: white; border: 1px solid #444; font-weight: bold;">Asistió</td>'
+                        else: html += f'<td style="background-color: {bg_fila}; border: 1px solid #444;"></td>'
+                html += '</tr>'
+                
+        html += '</table></div>'
+        st.markdown(html, unsafe_allow_html=True)
+        st.write("") 
+        
+        total_per = sum([float(m[0]) for m in run_query("SELECT monto FROM movimientos WHERE tipo='Ingreso' AND info_extra LIKE %s", (f"%Mes: {per_rep}%",)) or []])
+        st.success(f"💰 Recaudación exacta del Periodo '{per_rep}': **S/ {total_per:.2f}**")
+    else:
+        st.info("No hay alumnos con asistencia en este periodo.")
+
 
 # ==========================================
 # 2. SISTEMA DE LOGIN EN PANEL LATERAL
@@ -90,13 +155,53 @@ with st.sidebar:
 
 
 # ==========================================
-# INTERFAZ PRINCIPAL
+# INTERFAZ PRINCIPAL Y ORDENAMIENTO
 # ==========================================
 st.title("🏐 Sistema de Gestión - Vóley")
 
 res_per = run_query("SELECT DISTINCT periodo FROM periodos")
 lista_periodos = [row[0] for row in res_per] if res_per else []
 
+# 1. Ordenar periodos del más reciente al más antiguo
+def obtener_fecha_maxima(periodo_nombre):
+    dias = run_query("SELECT fecha FROM periodos WHERE periodo=%s", (periodo_nombre,))
+    max_d = datetime.min
+    if dias:
+        for d in dias:
+            try:
+                dt = datetime.strptime(d[0], "%d/%m/%Y")
+                if dt > max_d: max_d = dt
+            except: pass
+    return max_d
+
+lista_periodos.sort(key=obtener_fecha_maxima, reverse=True)
+
+# 2. Identificar matemáticamente el Periodo Actual (hoy entre la min y max fecha)
+def obtener_indice_periodo_actual(periodos):
+    if not periodos: return 0
+    hoy = datetime.now().date()
+    
+    todas_fechas = run_query("SELECT periodo, fecha FROM periodos")
+    if not todas_fechas: return 0
+    
+    mapa_fechas = {}
+    for p, f in todas_fechas:
+        try:
+            dt = datetime.strptime(f, "%d/%m/%Y").date()
+            if p not in mapa_fechas: mapa_fechas[p] = []
+            mapa_fechas[p].append(dt)
+        except: pass
+        
+    for i, p in enumerate(periodos):
+        if p in mapa_fechas and mapa_fechas[p]:
+            if min(mapa_fechas[p]) <= hoy <= max(mapa_fechas[p]):
+                return i
+                
+    return 0 # Si hoy no hay clases en ningún periodo, devuelve el más reciente
+
+idx_periodo_actual = obtener_indice_periodo_actual(lista_periodos)
+
+# Obtener listas de nombres
 res_m = run_query("SELECT nino FROM alumnos_mensuales")
 lista_nombres_m = [row[0] for row in res_m] if res_m else []
 
@@ -109,7 +214,7 @@ lista_todos_nombres = lista_nombres_m + lista_nombres_l
 # 3. VISTA VECINOS (PÚBLICA POR DEFECTO)
 # ==========================================
 if st.session_state["rol"] == "vecino":
-    tab_resumen, tab_asist = st.tabs(["💰 Resumen de Cuentas", "✅ Asistencias"])
+    tab_resumen, tab_asist, tab_rep = st.tabs(["💰 Resumen de Cuentas", "✅ Asistencias", "📊 Reporte Visual"])
     
     with tab_resumen:
         st.header("Transparencia Financiera")
@@ -131,7 +236,7 @@ if st.session_state["rol"] == "vecino":
         
         col1, col2 = st.columns(2)
         col1.metric("📊 Balance Total en Cuenta", f"S/ {balance_total:.2f}")
-        col2.metric("👨‍🏫 Deuda a Profesor", f"S/ {saldo_prof:.2f}", f"{clases} clases dictadas", delta_color="inverse")
+        col2.metric("👨‍‍🏫 Deuda a Profesor", f"S/ {saldo_prof:.2f}", f"{clases} clases dictadas", delta_color="inverse")
         
         st.info("💡 Este panel refleja los ingresos totales, el fondo previo y los pagos realizados al profesor para mantener la transparencia con todos los vecinos.")
 
@@ -141,7 +246,6 @@ if st.session_state["rol"] == "vecino":
         if asistencias_db:
             df_a = pd.DataFrame(asistencias_db, columns=["Niño", "Periodo", "Día", "Modalidad"])
             
-            # Guardamos la fecha real en una columna temporal para que los dropdowns sigan funcionando con texto
             df_a["Día_Date"] = pd.to_datetime(df_a["Día"], format="%d/%m/%Y", errors="coerce").dt.date
             
             cf1, cf2, cf3 = st.columns(3)
@@ -158,7 +262,6 @@ if st.session_state["rol"] == "vecino":
             if filtro_dia != "Todos": df_filtrado = df_filtrado[df_filtrado["Día"] == filtro_dia]
             if filtro_alum != "Todos": df_filtrado = df_filtrado[df_filtrado["Niño"] == filtro_alum]
             
-            # Reemplazamos la columna de texto por la columna de fecha real antes de mostrar
             df_filtrado = df_filtrado.drop(columns=["Día"]).rename(columns={"Día_Date": "Día"})
             df_filtrado = df_filtrado[["Niño", "Periodo", "Día", "Modalidad"]]
             
@@ -170,6 +273,15 @@ if st.session_state["rol"] == "vecino":
             )
         else:
             st.write("No hay asistencias registradas aún.")
+
+    with tab_rep:
+        st.header("📊 Reporte de Asistencias y Pagos")
+        if lista_periodos:
+            # Usamos el idx_periodo_actual autocalculado
+            per_rep_v = st.selectbox("Seleccionar Periodo:", lista_periodos, index=idx_periodo_actual, key="rep_vecinos")
+            renderizar_reporte(per_rep_v)
+        else:
+            st.info("No hay periodos registrados.")
 
 
 # ==========================================
@@ -209,7 +321,6 @@ elif st.session_state["rol"] == "admin":
                     dias_lista.sort(key=lambda x: datetime.strptime(x, "%d/%m/%Y"))
                     
                     df_dias = pd.DataFrame(dias_lista, columns=["Fechas de Clase"])
-                    # Convertir a formato de fecha para la tabla
                     df_dias["Fechas de Clase"] = pd.to_datetime(df_dias["Fechas de Clase"], format="%d/%m/%Y", errors="coerce").dt.date
                     
                     st.dataframe(
@@ -269,7 +380,8 @@ elif st.session_state["rol"] == "admin":
     with tab_asis:
         st.header("✅ Registro de Asistencia")
         c1, c2, c3 = st.columns(3)
-        per_asis = c1.selectbox("1. Periodo:", ["-"] + lista_periodos, key="per_asis")
+        # Aquí también autoseleccionamos el periodo actual para mayor comodidad al marcar asistencias
+        per_asis = c1.selectbox("1. Periodo:", ["-"] + lista_periodos, index=(idx_periodo_actual + 1 if lista_periodos else 0), key="per_asis")
         
         fechas_asis = ["-"]
         if per_asis != "-":
@@ -280,6 +392,44 @@ elif st.session_state["rol"] == "admin":
         dia_asis = c2.selectbox("2. Día:", fechas_asis)
         alum_asis = c3.selectbox("3. Alumno:", ["-"] + lista_todos_nombres)
         
+        if per_asis != "-" and alum_asis != "-":
+            datos_m = run_query("SELECT padre, pago FROM alumnos_mensuales WHERE nino=%s AND periodo=%s", (alum_asis, per_asis))
+            if datos_m:
+                padre_m, pago_m = datos_m[0]
+                
+                hoy = datetime.now().date()
+                dias_db = run_query("SELECT fecha FROM periodos WHERE periodo=%s", (per_asis,))
+                clases_pasadas = 0
+                if dias_db:
+                    for d in dias_db:
+                        try:
+                            if datetime.strptime(d[0], "%d/%m/%Y").date() <= hoy:
+                                clases_pasadas += 1
+                        except: pass
+                
+                asist_reales_query = run_query("SELECT COUNT(*) FROM asistencias WHERE nino=%s AND periodo=%s", (alum_asis, per_asis))
+                asist_reales = asist_reales_query[0][0] if asist_reales_query else 0
+
+                if pago_m == "No" and clases_pasadas >= 2:
+                    st.warning(f"⚠️ **Alerta de Deuda:** {alum_asis} está en modalidad Mensual, no ha pagado '{per_asis}' y ya han transcurrido {clases_pasadas} clases del mes. (Solo asistió a {asist_reales}).")
+                    if st.button("🔄 Cambiar a modalidad Libre", help="Pasará a Libre y solo se le cobrarán las clases a las que asistió realmente."):
+                        
+                        l_exist = run_query("SELECT id FROM alumnos_libres WHERE nino=%s", (alum_asis,))
+                        if l_exist:
+                            run_update("UPDATE alumnos_libres SET asistidas = asistidas + %s WHERE nino=%s", (asist_reales, alum_asis))
+                            ld = run_query("SELECT asistidas, pagadas FROM alumnos_libres WHERE nino=%s", (alum_asis,))[0]
+                            run_update("UPDATE alumnos_libres SET estado=%s WHERE nino=%s", ("🟢 Al Día" if ld[1] >= ld[0] else "🔴 Debe", alum_asis))
+                        else:
+                            run_update("INSERT INTO alumnos_libres VALUES (%s, %s, %s, %s, %s, %s)", 
+                                       (generar_id(), alum_asis, padre_m, asist_reales, 0, "🔴 Debe" if asist_reales > 0 else "🟢 Al Día"))
+                        
+                        run_update("DELETE FROM alumnos_mensuales WHERE nino=%s AND periodo=%s", (alum_asis, per_asis))
+                        run_update("UPDATE asistencias SET modalidad='Libre' WHERE nino=%s AND periodo=%s", (alum_asis, per_asis))
+                        
+                        st.success(f"{alum_asis} ahora es Libre. Su deuda se ajustó a {asist_reales} clase(s).")
+                        time.sleep(1.5)
+                        st.rerun()
+
         if st.button("✅ Marcar Asistencia", type="primary"):
             if per_asis != "-" and dia_asis != "-" and alum_asis != "-":
                 if run_query("SELECT id FROM asistencias WHERE nino=%s AND periodo=%s AND dia=%s", (alum_asis, per_asis, dia_asis)):
@@ -318,7 +468,6 @@ elif st.session_state["rol"] == "admin":
             if filtro_dia != "Todos": df_filtrado = df_filtrado[df_filtrado["Día"] == filtro_dia]
             if filtro_alum != "Todos": df_filtrado = df_filtrado[df_filtrado["Niño"] == filtro_alum]
             
-            # Reemplazar por columna date
             df_filtrado = df_filtrado.drop(columns=["Día"]).rename(columns={"Día_Date": "Día"})
             df_filtrado = df_filtrado[["ID", "Niño", "Periodo", "Día", "Modalidad"]]
             
@@ -351,7 +500,7 @@ elif st.session_state["rol"] == "admin":
         
         c1, c2 = st.columns(2)
         c1.metric("📊 Balance Total", f"S/ {balance_total:.2f}")
-        c2.metric("👨‍🏫 Deuda a Profesor", f"S/ {saldo_prof:.2f}", f"{clases} clases dadas", delta_color="inverse")
+        c2.metric("👨‍‍🏫 Deuda a Profesor", f"S/ {saldo_prof:.2f}", f"{clases} clases dadas", delta_color="inverse")
         st.divider()
 
         col_ing, col_eg = st.columns(2)
@@ -396,7 +545,6 @@ elif st.session_state["rol"] == "admin":
             ml = sorted(list(movimientos_db), key=lambda x: datetime.strptime(x[3], "%d/%m/%Y") if x[3] else datetime.min, reverse=True)
             df_mov = pd.DataFrame(ml, columns=["ID", "Tipo", "Detalle", "Fecha Op.", "Monto", "F. Traslado", "Info Extra"])
             
-            # CONVERSIÓN DE FECHAS A DATETIME PARA ORDENAMIENTO CORRECTO
             df_mov["Fecha Op."] = pd.to_datetime(df_mov["Fecha Op."], format="%d/%m/%Y", errors="coerce").dt.date
             df_mov["F. Traslado"] = pd.to_datetime(df_mov["F. Traslado"], format="%d/%m/%Y", errors="coerce").dt.date
             
@@ -411,73 +559,16 @@ elif st.session_state["rol"] == "admin":
             )
             
             del_mov = st.selectbox("Eliminar (ID):", ["-"] + df_mov["ID"].astype(str).tolist(), key="dmov")
-            if st.button("🗑️ Borrar Movimiento"):
+            if st.button("🗑 Borrar Movimiento"):
                 run_update("DELETE FROM movimientos WHERE id=%s", (del_mov,))
                 st.rerun()
 
     # --- PESTAÑA 5: REPORTES ---
     with tab_rep:
         st.header("📊 Reporte Visual Rápido")
-        per_rep = st.selectbox("Evaluar Periodo:", ["-"] + lista_periodos)
-        
-        if per_rep != "-":
-            hoy = datetime.now().date()
-            dias_db = run_query("SELECT fecha FROM periodos WHERE periodo=%s", (per_rep,))
-            dias_periodo = sorted([d[0] for d in dias_db], key=lambda x: datetime.strptime(x, "%d/%m/%Y")) if dias_db else []
-            
-            asis_per = run_query("SELECT nino, dia FROM asistencias WHERE periodo=%s", (per_rep,))
-            asis_set = set((a[0], a[1]) for a in asis_per) if asis_per else set()
-            
-            mensuales_per = run_query("SELECT nino, pago FROM alumnos_mensuales WHERE periodo=%s", (per_rep,))
-            libres_todos = run_query("SELECT nino, pagadas, estado FROM alumnos_libres")
-            nombres_libres_asis = set(a[0] for a in asis_per) if asis_per else set()
-            libres_filtrados = [l for l in libres_todos if l[0] in nombres_libres_asis] if libres_todos else []
-
-            if mensuales_per or libres_filtrados:
-                html = '<div style="overflow-x: auto;"><table style="width:100%; border-collapse: collapse; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">'
-                html += '<tr style="background-color: #1f2937; color: white;">'
-                for col in ["Alumno", "Mod", "Pago/Saldo"] + dias_periodo: html += f'<th style="padding: 10px; border: 1px solid #444;">{col}</th>'
-                html += '</tr>'
-                
-                if mensuales_per:
-                    for m in mensuales_per:
-                        nino, pago = m[0], m[1]
-                        bg_fila = '#1e3a8a' if pago == 'Sí' else '#991b1b'
-                        html += f'<tr><td style="background-color: {bg_fila}; color: white; padding: 8px; border: 1px solid #444; font-weight: bold; text-align: left;">{nino}</td>'
-                        html += f'<td style="background-color: {bg_fila}; color: white; border: 1px solid #444;">Mensual</td>'
-                        html += f'<td style="background-color: {bg_fila}; color: white; border: 1px solid #444;">Pagó: {pago}</td>'
-                        
-                        for dia in dias_periodo:
-                            try: f_clase = datetime.strptime(dia, "%d/%m/%Y").date()
-                            except: f_clase = hoy
-                            if f_clase > hoy: html += f'<td style="background-color: {bg_fila}; border: 1px solid #444;"></td>'
-                            else:
-                                if (nino, dia) in asis_set: html += f'<td style="background-color: #059669; color: white; border: 1px solid #444; font-weight: bold;">Asistió</td>'
-                                else: html += f'<td style="background-color: {"#ea580c" if pago=="Sí" else bg_fila}; color: white; border: 1px solid #444; font-weight: bold;">Faltó</td>'
-                        html += '</tr>'
-                        
-                if libres_filtrados:
-                    for l in libres_filtrados:
-                        nino, pagadas, estado = l[0], l[1], l[2]
-                        bg_fila = '#065f46' if 'Al Día' in estado else '#991b1b'
-                        html += f'<tr><td style="background-color: {bg_fila}; color: white; padding: 8px; border: 1px solid #444; font-weight: bold; text-align: left;">{nino}</td>'
-                        html += f'<td style="background-color: {bg_fila}; color: white; border: 1px solid #444;">Libre</td>'
-                        html += f'<td style="background-color: {bg_fila}; color: white; border: 1px solid #444;">Pagadas: {pagadas}</td>'
-                        
-                        for dia in dias_periodo:
-                            try: f_clase = datetime.strptime(dia, "%d/%m/%Y").date()
-                            except: f_clase = hoy
-                            if f_clase > hoy: html += f'<td style="background-color: {bg_fila}; border: 1px solid #444;"></td>'
-                            else:
-                                if (nino, dia) in asis_set: html += f'<td style="background-color: #059669; color: white; border: 1px solid #444; font-weight: bold;">Asistió</td>'
-                                else: html += f'<td style="background-color: {bg_fila}; border: 1px solid #444;"></td>'
-                        html += '</tr>'
-                        
-                html += '</table></div>'
-                st.markdown(html, unsafe_allow_html=True)
-                st.write("") 
-                
-                total_per = sum([float(m[0]) for m in run_query("SELECT monto FROM movimientos WHERE tipo='Ingreso' AND info_extra LIKE %s", (f"%Mes: {per_rep}%",)) or []])
-                st.success(f"💰 Recaudación exacta del Periodo '{per_rep}': **S/ {total_per:.2f}**")
-            else:
-                st.info("No hay alumnos con asistencia en este periodo.")
+        if lista_periodos:
+            # Autocarga de Admin con el índice correcto
+            per_rep_a = st.selectbox("Evaluar Periodo:", lista_periodos, index=idx_periodo_actual, key="rep_admin")
+            renderizar_reporte(per_rep_a)
+        else:
+            st.info("No hay periodos registrados.")
