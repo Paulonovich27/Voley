@@ -62,7 +62,6 @@ def calcular_deuda_profesor():
 # ==========================================
 # 2. SISTEMA DE LOGIN EN PANEL LATERAL
 # ==========================================
-# Si es la primera vez que entra, es un vecino (modo lectura) por defecto
 if "rol" not in st.session_state:
     st.session_state["rol"] = "vecino"
 
@@ -95,7 +94,6 @@ with st.sidebar:
 # ==========================================
 st.title("🏐 Sistema de Gestión - Vóley")
 
-# Obtener listas maestras para ambos roles
 res_per = run_query("SELECT DISTINCT periodo FROM periodos")
 lista_periodos = [row[0] for row in res_per] if res_per else []
 
@@ -138,11 +136,38 @@ if st.session_state["rol"] == "vecino":
         st.info("💡 Este panel refleja los ingresos totales, el fondo previo y los pagos realizados al profesor para mantener la transparencia con todos los vecinos.")
 
     with tab_asist:
-        st.header("Historial de Asistencias")
+        st.header("Historial y Filtro de Asistencias")
         asistencias_db = run_query("SELECT nino, periodo, dia, modalidad FROM asistencias ORDER BY id DESC")
         if asistencias_db:
             df_a = pd.DataFrame(asistencias_db, columns=["Niño", "Periodo", "Día", "Modalidad"])
-            st.dataframe(df_a, use_container_width=True, hide_index=True)
+            
+            # Guardamos la fecha real en una columna temporal para que los dropdowns sigan funcionando con texto
+            df_a["Día_Date"] = pd.to_datetime(df_a["Día"], format="%d/%m/%Y", errors="coerce").dt.date
+            
+            cf1, cf2, cf3 = st.columns(3)
+            filtro_per = cf1.selectbox("Filtrar Periodo:", ["Todos"] + df_a["Periodo"].unique().tolist(), key="v_per")
+            
+            dias_filtro = df_a["Día"].unique().tolist() if filtro_per == "Todos" else df_a[df_a["Periodo"] == filtro_per]["Día"].unique().tolist()
+            filtro_dia = cf2.selectbox("Filtrar Día:", ["Todos"] + dias_filtro, key="v_dia")
+            
+            ninos_filtro = df_a["Niño"].unique().tolist() if filtro_per == "Todos" else df_a[df_a["Periodo"] == filtro_per]["Niño"].unique().tolist()
+            filtro_alum = cf3.selectbox("Filtrar Niño:", ["Todos"] + ninos_filtro, key="v_alum")
+            
+            df_filtrado = df_a.copy()
+            if filtro_per != "Todos": df_filtrado = df_filtrado[df_filtrado["Periodo"] == filtro_per]
+            if filtro_dia != "Todos": df_filtrado = df_filtrado[df_filtrado["Día"] == filtro_dia]
+            if filtro_alum != "Todos": df_filtrado = df_filtrado[df_filtrado["Niño"] == filtro_alum]
+            
+            # Reemplazamos la columna de texto por la columna de fecha real antes de mostrar
+            df_filtrado = df_filtrado.drop(columns=["Día"]).rename(columns={"Día_Date": "Día"})
+            df_filtrado = df_filtrado[["Niño", "Periodo", "Día", "Modalidad"]]
+            
+            st.dataframe(
+                df_filtrado, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={"Día": st.column_config.DateColumn("Día", format="DD/MM/YYYY")}
+            )
         else:
             st.write("No hay asistencias registradas aún.")
 
@@ -182,8 +207,18 @@ elif st.session_state["rol"] == "admin":
                 if dias_db:
                     dias_lista = [d[0] for d in dias_db]
                     dias_lista.sort(key=lambda x: datetime.strptime(x, "%d/%m/%Y"))
+                    
                     df_dias = pd.DataFrame(dias_lista, columns=["Fechas de Clase"])
-                    st.dataframe(df_dias, use_container_width=True, hide_index=True)
+                    # Convertir a formato de fecha para la tabla
+                    df_dias["Fechas de Clase"] = pd.to_datetime(df_dias["Fechas de Clase"], format="%d/%m/%Y", errors="coerce").dt.date
+                    
+                    st.dataframe(
+                        df_dias, 
+                        use_container_width=True, 
+                        hide_index=True,
+                        column_config={"Fechas de Clase": st.column_config.DateColumn("Fechas de Clase", format="DD/MM/YYYY")}
+                    )
+                    
                     dia_borrar = st.selectbox("Borrar día:", dias_lista)
                     if st.button("🗑️ Borrar Fecha"):
                         run_update("DELETE FROM periodos WHERE periodo=%s AND fecha=%s", (nombre_per, dia_borrar))
@@ -263,12 +298,38 @@ elif st.session_state["rol"] == "admin":
                         run_update("INSERT INTO asistencias VALUES (%s, %s, %s, %s, %s)", (generar_id(), alum_asis, per_asis, dia_asis, mod))
                         st.rerun()
 
-        st.subheader("📋 Historial")
+        st.subheader("📋 Historial y Filtros")
         asist_db = run_query("SELECT id, nino, periodo, dia, modalidad FROM asistencias ORDER BY id DESC")
         if asist_db:
             df_a = pd.DataFrame(asist_db, columns=["ID", "Niño", "Periodo", "Día", "Modalidad"])
-            st.dataframe(df_a, use_container_width=True, hide_index=True)
-            del_a = st.selectbox("Deshacer (ID):", ["-"] + df_a["ID"].tolist())
+            df_a["Día_Date"] = pd.to_datetime(df_a["Día"], format="%d/%m/%Y", errors="coerce").dt.date
+            
+            cf1, cf2, cf3 = st.columns(3)
+            filtro_per = cf1.selectbox("Filtrar Periodo:", ["Todos"] + df_a["Periodo"].unique().tolist(), key="a_per")
+            
+            dias_filtro = df_a["Día"].unique().tolist() if filtro_per == "Todos" else df_a[df_a["Periodo"] == filtro_per]["Día"].unique().tolist()
+            filtro_dia = cf2.selectbox("Filtrar Día:", ["Todos"] + dias_filtro, key="a_dia")
+            
+            ninos_filtro = df_a["Niño"].unique().tolist() if filtro_per == "Todos" else df_a[df_a["Periodo"] == filtro_per]["Niño"].unique().tolist()
+            filtro_alum = cf3.selectbox("Filtrar Niño:", ["Todos"] + ninos_filtro, key="a_alum")
+            
+            df_filtrado = df_a.copy()
+            if filtro_per != "Todos": df_filtrado = df_filtrado[df_filtrado["Periodo"] == filtro_per]
+            if filtro_dia != "Todos": df_filtrado = df_filtrado[df_filtrado["Día"] == filtro_dia]
+            if filtro_alum != "Todos": df_filtrado = df_filtrado[df_filtrado["Niño"] == filtro_alum]
+            
+            # Reemplazar por columna date
+            df_filtrado = df_filtrado.drop(columns=["Día"]).rename(columns={"Día_Date": "Día"})
+            df_filtrado = df_filtrado[["ID", "Niño", "Periodo", "Día", "Modalidad"]]
+            
+            st.dataframe(
+                df_filtrado, 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={"Día": st.column_config.DateColumn("Día", format="DD/MM/YYYY")}
+            )
+            
+            del_a = st.selectbox("Deshacer (ID):", ["-"] + df_filtrado["ID"].astype(str).tolist())
             if st.button("🗑️ Deshacer Asistencia", type="primary"):
                 row = df_a[df_a["ID"] == del_a].iloc[0]
                 if row["Modalidad"] == "Mensual": run_update("UPDATE alumnos_mensuales SET asistidas = asistidas - 1, restantes = restantes + 1 WHERE nino=%s", (row["Niño"],))
@@ -334,8 +395,22 @@ elif st.session_state["rol"] == "admin":
         if movimientos_db:
             ml = sorted(list(movimientos_db), key=lambda x: datetime.strptime(x[3], "%d/%m/%Y") if x[3] else datetime.min, reverse=True)
             df_mov = pd.DataFrame(ml, columns=["ID", "Tipo", "Detalle", "Fecha Op.", "Monto", "F. Traslado", "Info Extra"])
-            st.dataframe(df_mov.style.apply(lambda r: [f"background-color: {'#065f46' if r['Tipo']=='Ingreso' else '#7f1d1d'}; color: white"] * len(r), axis=1), use_container_width=True, hide_index=True)
-            del_mov = st.selectbox("Eliminar (ID):", ["-"] + df_mov["ID"].tolist(), key="dmov")
+            
+            # CONVERSIÓN DE FECHAS A DATETIME PARA ORDENAMIENTO CORRECTO
+            df_mov["Fecha Op."] = pd.to_datetime(df_mov["Fecha Op."], format="%d/%m/%Y", errors="coerce").dt.date
+            df_mov["F. Traslado"] = pd.to_datetime(df_mov["F. Traslado"], format="%d/%m/%Y", errors="coerce").dt.date
+            
+            st.dataframe(
+                df_mov.style.apply(lambda r: [f"background-color: {'#065f46' if r['Tipo']=='Ingreso' else '#7f1d1d'}; color: white"] * len(r), axis=1), 
+                use_container_width=True, 
+                hide_index=True,
+                column_config={
+                    "Fecha Op.": st.column_config.DateColumn("Fecha Op.", format="DD/MM/YYYY"),
+                    "F. Traslado": st.column_config.DateColumn("F. Traslado", format="DD/MM/YYYY")
+                }
+            )
+            
+            del_mov = st.selectbox("Eliminar (ID):", ["-"] + df_mov["ID"].astype(str).tolist(), key="dmov")
             if st.button("🗑️ Borrar Movimiento"):
                 run_update("DELETE FROM movimientos WHERE id=%s", (del_mov,))
                 st.rerun()
