@@ -9,7 +9,7 @@ from datetime import datetime
 # ==========================================
 st.set_page_config(page_title="Sistema Vóley", page_icon="🏐", layout="wide")
 
-# PEGA AQUÍ TU URL DE NEON
+# PEGA AQUÍ TU URL DE NEON (NO LA BORRES)
 DATABASE_URL = "postgresql://usuario:contraseña@ep-tu-base-de-datos.aws.neon.tech/neondb?sslmode=require"
 
 def get_connection():
@@ -58,42 +58,41 @@ def calcular_deuda_profesor():
             
     return clases_pasadas, total_generado, total_generado - total_pagado
 
-# ==========================================
-# 2. SISTEMA DE LOGIN Y PERMISOS
-# ==========================================
-if "rol" not in st.session_state:
-    st.session_state["rol"] = None
 
-if st.session_state["rol"] is None:
-    st.markdown("<h1 style='text-align: center;'>🏐 Sistema de Gestión - Vóley</h1>", unsafe_allow_html=True)
-    st.markdown("<h4 style='text-align: center; color: #6b7280;'>Acceso a la plataforma</h4>", unsafe_allow_html=True)
+# ==========================================
+# 2. SISTEMA DE LOGIN EN PANEL LATERAL
+# ==========================================
+# Si es la primera vez que entra, es un vecino (modo lectura) por defecto
+if "rol" not in st.session_state:
+    st.session_state["rol"] = "vecino"
+
+with st.sidebar:
+    st.markdown("### 🔐 Acceso Administrador")
     
-    col1, col2, col3 = st.columns([1, 1.5, 1])
-    with col2:
+    if st.session_state["rol"] == "vecino":
+        st.info("Actualmente estás en el modo de vista pública (solo lectura).")
         with st.form("login_form"):
             usuario = st.text_input("Usuario")
             password = st.text_input("Contraseña", type="password")
-            submit = st.form_submit_button("Ingresar", use_container_width=True)
+            submit = st.form_submit_button("Ingresar como Admin", use_container_width=True)
             
             if submit:
                 # CREA TUS CONTRASEÑAS AQUÍ
                 if usuario == "admin" and password == "voleyadmin":
                     st.session_state["rol"] = "admin"
                     st.rerun()
-                elif usuario == "vecino" and password == "voley123":
-                    st.session_state["rol"] = "vecino"
-                    st.rerun()
                 else:
                     st.error("❌ Credenciales incorrectas")
-    st.stop() # Detiene la ejecución si no hay login
+    else:
+        st.success("✅ Sesión iniciada como Administrador. Tienes control total.")
+        if st.button("🚪 Cerrar Sesión", use_container_width=True):
+            st.session_state["rol"] = "vecino"
+            st.rerun()
 
-# Botón para cerrar sesión
-with st.sidebar:
-    st.write(f"👤 **Sesión actual:** {st.session_state['rol'].capitalize()}")
-    if st.button("🚪 Cerrar Sesión"):
-        st.session_state["rol"] = None
-        st.rerun()
 
+# ==========================================
+# INTERFAZ PRINCIPAL
+# ==========================================
 st.title("🏐 Sistema de Gestión - Vóley")
 
 # Obtener listas maestras para ambos roles
@@ -109,7 +108,7 @@ lista_todos_nombres = lista_nombres_m + lista_nombres_l
 
 
 # ==========================================
-# 3. VISTA VECINOS (SOLO LECTURA)
+# 3. VISTA VECINOS (PÚBLICA POR DEFECTO)
 # ==========================================
 if st.session_state["rol"] == "vecino":
     tab_resumen, tab_asist = st.tabs(["💰 Resumen de Cuentas", "✅ Asistencias"])
