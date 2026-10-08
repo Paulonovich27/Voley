@@ -288,8 +288,8 @@ if st.session_state["rol"] == "vecino":
 # 4. VISTA ADMIN (CONTROL TOTAL)
 # ==========================================
 elif st.session_state["rol"] == "admin":
-    tab_per, tab_alum, tab_asis, tab_tes, tab_rep = st.tabs([
-        "1. Periodos", "2. Alumnos", "3. Asistencia", "4. Tesorería", "5. Reportes"
+    tab_per, tab_alum, tab_asis, tab_tes, tab_rep, tab_cierre = st.tabs([
+        "1. Periodos", "2. Alumnos", "3. Asistencia", "4. Tesorería", "5. Reportes", "6. Cierre / Traspaso"
     ])
 
     # --- PESTAÑA 1: PERIODOS ---
@@ -572,3 +572,65 @@ elif st.session_state["rol"] == "admin":
             renderizar_reporte(per_rep_a)
         else:
             st.info("No hay periodos registrados.")
+
+    # --- PESTAÑA 6: CIERRE / TRASPASO ---
+    with tab_cierre:
+        st.header("🤝 Reporte Oficial de Cierre y Traspaso")
+        st.markdown("Este panel genera un resumen exacto de cómo se están entregando las cuentas.")
+        st.divider()
+
+        # 1. FLUJO Y CAJA
+        fondo = run_query("SELECT valor FROM configuracion WHERE clave='fondo_previo'")
+        fondo_val = float(fondo[0][0]) if fondo else 0.0
+        
+        total_ingresos = sum([float(m[1]) for m in run_query("SELECT tipo, monto FROM movimientos WHERE tipo='Ingreso'") or []])
+        total_egresos = sum([float(m[1]) for m in run_query("SELECT tipo, monto FROM movimientos WHERE tipo='Egreso'") or []])
+        balance_final = fondo_val + total_ingresos - total_egresos
+
+        st.subheader("1. Estado del Dinero")
+        colA, colB, colC, colD = st.columns(4)
+        colA.metric("Fondo Inicial", f"S/ {fondo_val:.2f}")
+        colB.metric("Total Ingresos", f"S/ {total_ingresos:.2f}")
+        colC.metric("Total Egresos", f"S/ {total_egresos:.2f}")
+        colD.metric("💰 EFECTIVO A ENTREGAR", f"S/ {balance_final:.2f}", delta_color="off")
+        
+        # 2. PROFESOR
+        st.subheader("2. Estado con el Profesor")
+        clases, total_gen, total_pagado_prof, saldo_prof = calcular_deuda_profesor()
+        colP1, colP2, colP3 = st.columns(3)
+        colP1.metric("Costo Generado (80/clase)", f"S/ {total_gen:.2f}", f"{clases} clases")
+        colP2.metric("Pagos Realizados", f"S/ {total_pagado_prof:.2f}")
+        colP3.metric("⚠️ DEUDA PENDIENTE", f"S/ {saldo_prof:.2f}", delta_color="inverse")
+
+        # 3. DEUDORES
+        st.subheader("3. Cuentas por Cobrar (Deudores)")
+        st.write("A continuación se listan todas las personas que le deben dinero a la academia a fecha de hoy.")
+        
+        # Consultar deudores mensuales
+        deudores_mensuales = run_query("SELECT nino, padre, periodo, asistidas FROM alumnos_mensuales WHERE pago='No'")
+        # Consultar deudores libres
+        deudores_libres = run_query("SELECT nino, padre, asistidas, pagadas FROM alumnos_libres WHERE asistidas > pagadas")
+        
+        lista_deudores = []
+        if deudores_mensuales:
+            for dm in deudores_mensuales:
+                lista_deudores.append({"Alumno": dm[0], "Apoderado": dm[1], "Modalidad": "Mensual", "Detalle Deuda": f"Debe periodo completo: {dm[2]} (Ha ido a {dm[3]} clases)"})
+        if deudores_libres:
+            for dl in deudores_libres:
+                deuda_clases = dl[2] - dl[3]
+                lista_deudores.append({"Alumno": dl[0], "Apoderado": dl[1], "Modalidad": "Libre", "Detalle Deuda": f"Debe {deuda_clases} clase(s) (Asistió {dl[2]}, pagó {dl[3]})"})
+        
+        if lista_deudores:
+            df_deudores = pd.DataFrame(lista_deudores)
+            st.dataframe(df_deudores.style.apply(lambda r: [f"background-color: #991b1b; color: white; border: 1px solid white; font-weight: bold"] * len(r), axis=1), use_container_width=True, hide_index=True)
+        else:
+            st.success("¡Felicidades! Ningún alumno debe dinero a la academia.")
+
+        # 4. HISTORIAL
+        st.subheader("4. Historial Detallado de Movimientos")
+        st.write("Auditoría de cada pago registrado en el sistema:")
+        movs = run_query("SELECT fecha_op, tipo, detalle, info_extra, monto FROM movimientos")
+        if movs:
+            ml = sorted(list(movs), key=lambda x: datetime.strptime(x[0], "%d/%m/%Y") if x[0] else datetime.min, reverse=True)
+            df_historial = pd.DataFrame(ml, columns=["Fecha", "Tipo", "Detalle/Alumno", "Periodo/Clases", "Monto (S/)"])
+            st.dataframe(df_historial, use_container_width=True, hide_index=True)
