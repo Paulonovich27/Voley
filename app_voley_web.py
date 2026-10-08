@@ -596,7 +596,8 @@ elif st.session_state["rol"] == "admin":
         
         # 2. PROFESOR
         st.subheader("2. Estado con el Profesor")
-        clases, total_gen, total_pagado_prof, saldo_prof = calcular_deuda_profesor()
+        clases, total_gen, saldo_prof = calcular_deuda_profesor()
+        total_pagado_prof = total_gen - saldo_prof # Lo calculamos aquí para no romper el resto del sistema
         colP1, colP2, colP3 = st.columns(3)
         colP1.metric("Costo Generado (80/clase)", f"S/ {total_gen:.2f}", f"{clases} clases")
         colP2.metric("Pagos Realizados", f"S/ {total_pagado_prof:.2f}")
@@ -606,19 +607,40 @@ elif st.session_state["rol"] == "admin":
         st.subheader("3. Cuentas por Cobrar (Deudores)")
         st.write("A continuación se listan todas las personas que le deben dinero a la academia a fecha de hoy.")
         
-        # Consultar deudores mensuales
-        deudores_mensuales = run_query("SELECT nino, padre, periodo, asistidas FROM alumnos_mensuales WHERE pago='No'")
-        # Consultar deudores libres
-        deudores_libres = run_query("SELECT nino, padre, asistidas, pagadas FROM alumnos_libres WHERE asistidas > pagadas")
+        # Extraemos a los alumnos sin depender de sus contadores internos
+        deudores_mensuales = run_query("SELECT nino, padre, periodo FROM alumnos_mensuales WHERE pago='No'")
+        deudores_libres = run_query("SELECT nino, padre, pagadas FROM alumnos_libres")
         
         lista_deudores = []
+        
+        # Evaluar Mensuales con su asistencia real
         if deudores_mensuales:
             for dm in deudores_mensuales:
-                lista_deudores.append({"Alumno": dm[0], "Apoderado": dm[1], "Modalidad": "Mensual", "Detalle Deuda": f"Debe periodo completo: {dm[2]} (Ha ido a {dm[3]} clases)"})
+                nino, apoderado, periodo = dm[0], dm[1], dm[2]
+                asist_reales_q = run_query("SELECT COUNT(*) FROM asistencias WHERE nino=%s AND periodo=%s", (nino, periodo))
+                asist_reales = asist_reales_q[0][0] if asist_reales_q else 0
+                lista_deudores.append({
+                    "Alumno": nino, 
+                    "Apoderado": apoderado, 
+                    "Modalidad": "Mensual", 
+                    "Detalle Deuda": f"Debe periodo completo: {periodo} (Ha ido a {asist_reales} clases)"
+                })
+                
+        # Evaluar Libres con su asistencia real
         if deudores_libres:
             for dl in deudores_libres:
-                deuda_clases = dl[2] - dl[3]
-                lista_deudores.append({"Alumno": dl[0], "Apoderado": dl[1], "Modalidad": "Libre", "Detalle Deuda": f"Debe {deuda_clases} clase(s) (Asistió {dl[2]}, pagó {dl[3]})"})
+                nino, apoderado, pagadas = dl[0], dl[1], dl[2]
+                asist_reales_q = run_query("SELECT COUNT(*) FROM asistencias WHERE nino=%s AND modalidad='Libre'", (nino,))
+                asist_reales = asist_reales_q[0][0] if asist_reales_q else 0
+                deuda_clases = asist_reales - pagadas
+                
+                if deuda_clases > 0:
+                    lista_deudores.append({
+                        "Alumno": nino, 
+                        "Apoderado": apoderado, 
+                        "Modalidad": "Libre", 
+                        "Detalle Deuda": f"Debe {deuda_clases} clase(s) (Asistió {asist_reales}, pagó {pagadas})"
+                    })
         
         if lista_deudores:
             df_deudores = pd.DataFrame(lista_deudores)
